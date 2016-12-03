@@ -1,4 +1,4 @@
-﻿//========= Copyright 2016, Valve Corporation, All rights reserved. ===========
+﻿//======= Copyright (c) Valve Corporation, All rights reserved. ===============
 //
 // Purpose: Used to render an external camera of vr player (split front/back).
 //
@@ -185,7 +185,10 @@ public class SteamVR_ExternalCamera : MonoBehaviour
 		var h = Screen.height / 2;
 
 		if (cam.targetTexture == null || cam.targetTexture.width != w || cam.targetTexture.height != h)
-			cam.targetTexture = new RenderTexture(w, h, 16, RenderTextureFormat.ARGB32);
+		{
+			cam.targetTexture = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32);
+			cam.targetTexture.antiAliasing = QualitySettings.antiAliasing == 0 ? 1 : QualitySettings.antiAliasing;
+		}
 
 		cam.nearClipPlane = config.near;
 		cam.farClipPlane = config.far;
@@ -248,6 +251,11 @@ public class SteamVR_ExternalCamera : MonoBehaviour
 		var w = Screen.width / 2;
 		var h = Screen.height / 2;
 		Graphics.DrawTexture(new Rect(0, h, w, h), cam.targetTexture, colorMat);
+	}
+
+	void OnGUI()
+	{
+		// Necessary for Graphics.DrawTexture to work even though we don't do anything here.
 	}
 
 	Camera[] cameras;

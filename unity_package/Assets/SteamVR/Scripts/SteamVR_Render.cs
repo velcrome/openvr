@@ -1,4 +1,4 @@
-﻿//========= Copyright 2014, Valve Corporation, All rights reserved. ===========
+﻿//======= Copyright (c) Valve Corporation, All rights reserved. ===============
 //
 // Purpose: Handles rendering of all SteamVR_Cameras
 //
@@ -10,20 +10,17 @@ using Valve.VR;
 
 public class SteamVR_Render : MonoBehaviour
 {
-	public float helpSeconds = 10.0f;
-	public string helpText = "You may now put on your headset.";
-	public GUIStyle helpStyle;
-
 	public bool pauseGameWhenDashboardIsVisible = true;
 	public bool lockPhysicsUpdateRateToRenderFrequency = true;
 
 	public SteamVR_ExternalCamera externalCamera;
 	public string externalCameraConfigPath = "externalcamera.cfg";
 
+#if (UNITY_5_3 || UNITY_5_2 || UNITY_5_1 || UNITY_5_0)
 	public LayerMask leftMask, rightMask;
 
 	SteamVR_CameraMask cameraMask;
-
+#endif
 	public ETrackingUniverseOrigin trackingSpace = ETrackingUniverseOrigin.TrackingUniverseStanding;
 
 	static public EVREye eye { get; private set; }
@@ -96,6 +93,10 @@ public class SteamVR_Render : MonoBehaviour
 			sorted[insert] = vrcam;
 
 		cameras = sorted;
+
+#if (UNITY_5_3 || UNITY_5_2 || UNITY_5_1 || UNITY_5_0)
+		enabled = true;
+#endif
 	}
 
 	void RemoveInternal(SteamVR_Camera vrcam)
@@ -134,7 +135,20 @@ public class SteamVR_Render : MonoBehaviour
 	public TrackedDevicePose_t[] poses = new TrackedDevicePose_t[OpenVR.k_unMaxTrackedDeviceCount];
 	public TrackedDevicePose_t[] gamePoses = new TrackedDevicePose_t[0];
 
-	static public bool pauseRendering = false;
+	static private bool _pauseRendering;
+	static public bool pauseRendering
+	{
+		get { return _pauseRendering; }
+		set
+		{
+			_pauseRendering = value;
+#if !(UNITY_5_3 || UNITY_5_2 || UNITY_5_1 || UNITY_5_0)
+			var compositor = OpenVR.Compositor;
+			if (compositor != null)
+				compositor.SuspendRendering(value);
+#endif
+		}
+	}
 
 	private IEnumerator RenderLoop()
 	{
@@ -191,6 +205,7 @@ public class SteamVR_Render : MonoBehaviour
 		}
 	}
 
+#if (UNITY_5_3 || UNITY_5_2 || UNITY_5_1 || UNITY_5_0)
 	void RenderEye(SteamVR vr, EVREye eye)
 	{
 		int i = (int)eye;
@@ -224,6 +239,7 @@ public class SteamVR_Render : MonoBehaviour
 			camera.cullingMask = cullingMask;
 		}
 	}
+#endif
 
 	void RenderExternalCamera()
 	{
@@ -246,9 +262,9 @@ public class SteamVR_Render : MonoBehaviour
 
 	float sceneResolutionScale = 1.0f, timeScale = 1.0f;
 
-	private void OnInputFocus(params object[] args)
-	{
-		bool hasFocus = (bool)args[0];
+    private void OnInputFocus(params object[] args)
+    {
+        bool hasFocus = (bool)args[0];
 		if (hasFocus)
 		{
 			if (pauseGameWhenDashboardIsVisible)
@@ -288,26 +304,82 @@ public class SteamVR_Render : MonoBehaviour
 #endif
 	}
 
-	void OnEnable()
+    private string GetScreenshotFilename(uint screenshotHandle, EVRScreenshotPropertyFilenames screenshotPropertyFilename)
+    {
+        var error = EVRScreenshotError.None;
+        var capacity = OpenVR.Screenshots.GetScreenshotPropertyFilename(screenshotHandle, screenshotPropertyFilename, null, 0, ref error);
+        if (error != EVRScreenshotError.None && error != EVRScreenshotError.BufferTooSmall )
+            return null;
+        if (capacity > 1)
+        {
+            var result = new System.Text.StringBuilder((int)capacity);
+            OpenVR.Screenshots.GetScreenshotPropertyFilename(screenshotHandle, screenshotPropertyFilename, result, capacity, ref error);
+            if (error != EVRScreenshotError.None)
+                return null;
+            return result.ToString();
+        }
+        return null;
+    }
+
+    private void OnRequestScreenshot(params object[] args)
+    {
+        var vrEvent = (VREvent_t)args[0];
+        var screenshotHandle = vrEvent.data.screenshot.handle;
+        var screenshotType = (EVRScreenshotType)vrEvent.data.screenshot.type;
+
+        if ( screenshotType == EVRScreenshotType.StereoPanorama )
+        {
+            string previewFilename = GetScreenshotFilename(screenshotHandle, EVRScreenshotPropertyFilenames.Preview);
+            string VRFilename = GetScreenshotFilename(screenshotHandle, EVRScreenshotPropertyFilenames.VR);
+
+            if (previewFilename == null || VRFilename == null)
+                return;
+
+            // Do the stereo panorama screenshot
+            // Figure out where the view is
+            GameObject screenshotPosition = new GameObject("screenshotPosition");
+            screenshotPosition.transform.position = SteamVR_Render.Top().transform.position;
+            screenshotPosition.transform.rotation = SteamVR_Render.Top().transform.rotation;
+            screenshotPosition.transform.localScale = SteamVR_Render.Top().transform.lossyScale;
+            SteamVR_Utils.TakeStereoScreenshot(screenshotHandle, screenshotPosition, 32, 0.064f, ref previewFilename, ref VRFilename);
+
+            // and submit it
+            OpenVR.Screenshots.SubmitScreenshot(screenshotHandle, screenshotType, previewFilename, VRFilename);
+        }
+    }
+
+    void OnEnable()
 	{
-		StartCoroutine("RenderLoop");
+        StartCoroutine("RenderLoop");
 		SteamVR_Utils.Event.Listen("input_focus", OnInputFocus);
 		SteamVR_Utils.Event.Listen("Quit", OnQuit);
+        SteamVR_Utils.Event.Listen("RequestScreenshot", OnRequestScreenshot);
+
+        var vr = SteamVR.instance;
+        if (vr == null)
+        {
+            enabled = false;
+            return;
+        }
+        var types = new EVRScreenshotType[] { EVRScreenshotType.StereoPanorama };
+        OpenVR.Screenshots.HookScreenshot(types);
 	}
 
 	void OnDisable()
 	{
 		StopAllCoroutines();
-		SteamVR_Utils.Event.Remove("input_focus", OnInputFocus);
+        SteamVR_Utils.Event.Remove("RequestScreenshot", OnRequestScreenshot);
+        SteamVR_Utils.Event.Remove("input_focus", OnInputFocus);
 		SteamVR_Utils.Event.Remove("Quit", OnQuit);
 	}
 
 	void Awake()
 	{
+#if (UNITY_5_3 || UNITY_5_2 || UNITY_5_1 || UNITY_5_0)
 		var go = new GameObject("cameraMask");
 		go.transform.parent = transform;
 		cameraMask = go.AddComponent<SteamVR_CameraMask>();
-
+#endif
 		if (externalCamera == null && System.IO.File.Exists(externalCameraConfigPath))
 		{
 			var prefab = Resources.Load<GameObject>("SteamVR_ExternalCamera");
@@ -368,10 +440,16 @@ public class SteamVR_Render : MonoBehaviour
 				switch ((EVREventType)vrEvent.eventType)
 				{
 					case EVREventType.VREvent_InputFocusCaptured: // another app has taken focus (likely dashboard)
-						SteamVR_Utils.Event.Send("input_focus", false);
+						if (vrEvent.data.process.oldPid == 0)
+						{
+							SteamVR_Utils.Event.Send("input_focus", false);
+						}
 						break;
 					case EVREventType.VREvent_InputFocusReleased: // that app has released input focus
-						SteamVR_Utils.Event.Send("input_focus", true);
+						if (vrEvent.data.process.pid == 0)
+						{
+							SteamVR_Utils.Event.Send("input_focus", true);
+						}
 						break;
 					case EVREventType.VREvent_ShowRenderModels:
 						SteamVR_Utils.Event.Send("hide_render_models", false);
@@ -394,7 +472,7 @@ public class SteamVR_Render : MonoBehaviour
 		QualitySettings.maxQueuedFrames = -1;
 		QualitySettings.vSyncCount = 0; // this applies to the companion window
 
-		if (lockPhysicsUpdateRateToRenderFrequency)
+		if (lockPhysicsUpdateRateToRenderFrequency && Time.timeScale > 0.0f)
 		{
 			var vr = SteamVR.instance;
 			if (vr != null)
@@ -403,44 +481,8 @@ public class SteamVR_Render : MonoBehaviour
 				timing.m_nSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Compositor_FrameTiming));
 				vr.compositor.GetFrameTiming(ref timing, 0);
 
-				Time.fixedDeltaTime = Time.timeScale * timing.m_nNumFramePresents / SteamVR.instance.hmd_DisplayFrequency;
+				Time.fixedDeltaTime = Time.timeScale / vr.hmd_DisplayFrequency;
 			}
-		}
-	}
-
-	void OnGUI()
-	{
-		var t = Time.timeSinceLevelLoad;
-		if (t < helpSeconds)
-		{
-			if (helpStyle == null)
-			{
-				helpStyle = new GUIStyle(GUI.skin.label);
-				helpStyle.fontSize = 32;
-			}
-
-			if (t > helpSeconds - 1.0f)
-			{
-				var color = helpStyle.normal.textColor;
-				color.a = helpSeconds - t;
-				helpStyle.normal.textColor = color;
-			}
-
-			GUILayout.BeginArea(new Rect(0, 0, Screen.width, Screen.height));
-			GUILayout.BeginVertical();
-			GUILayout.FlexibleSpace();
-			GUILayout.Label(helpText, helpStyle);
-			GUILayout.EndVertical();
-			GUILayout.EndArea();
-		}
-	}
-
-	static public void ShowHelpText(string text, float seconds)
-	{
-		if (_instance != null)
-		{
-			_instance.helpText = text;
-			_instance.helpSeconds = Time.timeSinceLevelLoad + seconds;
 		}
 	}
 }
